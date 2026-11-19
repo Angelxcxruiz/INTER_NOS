@@ -329,6 +329,7 @@ def test_administracion_de_entregas_solo_administrador(entorno, correo, admin_he
 
     lista = entorno.client.get(f"{ENTREGAS_URL}?estado=FALLIDA", headers=admin_headers)
     assert lista.status_code == 200 and lista.json()["total"] == 3
+    assert lista.headers["Cache-Control"] == "no-store"
     item = lista.json()["items"][0]
     assert item["ultimo_error"] == "SMTP rechazó el destinatario." and "correo" not in item and "mensaje" not in item
     for headers in (entorno.docente_headers, entorno.headers(0), {}):

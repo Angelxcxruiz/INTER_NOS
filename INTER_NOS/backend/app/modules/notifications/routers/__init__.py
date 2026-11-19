@@ -60,7 +60,8 @@ def get_notification(notification_id: uuid.UUID, actor: ActorDep, service: Notif
     "/notifications/{notification_id}/read", response_model=NotificacionRead, tags=_N,
     summary="Marcar como leída (idempotente)", responses=_r(401, 404),
 )
-def mark_read(notification_id: uuid.UUID, actor: ActorDep, service: NotificacionServiceDep) -> NotificacionRead:
+def mark_read(notification_id: uuid.UUID, actor: ActorDep, service: NotificacionServiceDep, response: Response) -> NotificacionRead:
+    response.headers.update(NO_STORE)
     return NotificacionRead.de(service.marcar_leida(notification_id, actor.usuario_id, actor.convocatoria_id))
 
 
@@ -71,10 +72,12 @@ def mark_read(notification_id: uuid.UUID, actor: ActorDep, service: Notificacion
 def list_deliveries(
     _admin: AdminUser,
     service: EntregasServiceDep,
+    response: Response,
     estado: EstadoEntregaEnum | None = None,
     skip: Annotated[int, Query(ge=0, le=OFFSET_MAXIMO)] = 0,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> EntregaList:
+    response.headers.update(NO_STORE)
     items, total = service.listar(estado, skip, limit)
     return EntregaList(items=[EntregaRead.de(e) for e in items], total=total, skip=skip, limit=limit)
 
@@ -83,5 +86,6 @@ def list_deliveries(
     "/notification-deliveries/{delivery_id}/retry", response_model=EntregaRead, tags=_E,
     summary="Reintentar una entrega FALLIDA (se revalida antes de enviar)", responses=_r(401, 403, 404, 409),
 )
-def retry_delivery(delivery_id: uuid.UUID, _admin: AdminUser, service: EntregasServiceDep) -> EntregaRead:
+def retry_delivery(delivery_id: uuid.UUID, _admin: AdminUser, service: EntregasServiceDep, response: Response) -> EntregaRead:
+    response.headers.update(NO_STORE)
     return EntregaRead.de(service.reintentar(delivery_id))
