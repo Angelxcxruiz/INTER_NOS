@@ -114,10 +114,12 @@ class ServicioReportesBase:
             raise NotFoundError(SESION_NO_ENCONTRADA)
         return fila
 
-    def _espacio_visible(self, espacio_id: uuid.UUID, docente_id: uuid.UUID):
+    def _espacio_visible(self, espacio_id: uuid.UUID, docente_id: uuid.UUID | None):
         """Visible si está activo (como en el módulo 3) o si el docente tiene sesiones en él (historial)."""
         espacio = self._repo.espacio(espacio_id)
-        if espacio is None or not (espacio.activo or self._repo.docente_tiene_sesiones_en_espacio(espacio_id, docente_id)):
+        if espacio is None or not (
+            docente_id is None or espacio.activo or self._repo.docente_tiene_sesiones_en_espacio(espacio_id, docente_id)
+        ):
             raise NotFoundError(ESPACIO_NO_ENCONTRADO)
         return espacio
 

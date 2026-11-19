@@ -143,7 +143,7 @@ class IntentosRead(BaseModel):
     expirados_por_tiempo: int
     expirados_por_revocacion: int
     expirados_por_fin_de_sesion: int
-    calificados: int = Field(description="Intentos con `nota_final` registrada.")
+    calificados: int = Field(description="Intentos con nota recalculada por el módulo 5.")
     pendientes_de_calificacion: int = Field(description="Cerrados que el módulo 5 calificaría, aún sin nota registrada.")
     sin_calificar: int = Field(description="Cerrados sin nota por la política del módulo 5 (no son un cero).")
     vencidos_sin_cerrar: int = Field(description="EN_PROGRESO con el tiempo agotado; se cerrarán como EXPIRADOS.")
@@ -165,7 +165,7 @@ class TramoRead(BaseModel):
 
 
 class EstadisticasNotasRead(BaseModel):
-    unidad: Literal["intento"] = Field("intento", description="Estadísticas por intento evaluado, no por estudiante.")
+    unidad: Literal["intento"] = Field("intento", description="Nota consolidada por estudiante: se usa el último intento.")
     evaluados: int
     escala_max: Decimal | None
     minimo: Decimal | None
@@ -238,6 +238,7 @@ class EstudianteReporteRead(BaseModel):
     intentos_utilizados: int
     intento_activo: bool
     intentos_calificados: int
+    nota_consolidada: Decimal | None = Field(description="Nota del último intento cerrado y evaluable.")
     condicion: CondicionConvocado
     intentos: list[IntentoBreveRead]
 
@@ -280,9 +281,10 @@ class DesempenoEstudianteRead(BaseModel):
     convocatoria_id: uuid.UUID
     convocatoria_activa: bool
     intentos_autorizados: int
+    nota_consolidada: Decimal | None = Field(description="Nota del último intento cerrado y evaluable.")
     condicion: CondicionConvocado
     intentos: list[IntentoDetalleRead] = Field(
-        description="Todos los intentos, por número de intento. Cada uno conserva su nota: no se consolida (módulo 5)."
+        description="Todos los intentos, por número. Los agregados académicos consolidan usando el último intento."
     )
 
 

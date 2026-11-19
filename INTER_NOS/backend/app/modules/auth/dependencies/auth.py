@@ -64,6 +64,7 @@ def require_roles(*roles: RolUsuario) -> Callable[[Usuario], Usuario]:
 
 require_admin = require_roles(RolUsuario.ADMINISTRADOR)
 require_docente = require_roles(RolUsuario.DOCENTE)
+require_academico = require_roles(RolUsuario.ADMINISTRADOR, RolUsuario.DOCENTE)
 # Perfil propio con contraseña: los estudiantes no tienen contraseña (acceso por convocatoria).
 require_password_user = require_roles(RolUsuario.ADMINISTRADOR, RolUsuario.DOCENTE)
 
@@ -77,5 +78,6 @@ def require_case_creator(docente: Annotated[Usuario, Depends(require_docente)]) 
 
 AdminUser = Annotated[Usuario, Depends(require_admin)]
 DocenteUser = Annotated[Usuario, Depends(require_docente)]
+AcademicoUser = Annotated[Usuario, Depends(require_academico)]
 PasswordUser = Annotated[Usuario, Depends(require_password_user)]
 CaseCreator = Annotated[Usuario, Depends(require_case_creator)]

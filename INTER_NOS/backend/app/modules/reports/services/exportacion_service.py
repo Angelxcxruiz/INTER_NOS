@@ -127,6 +127,7 @@ class ExportacionService(ServicioReportesBase):
             if len(filas) > self._limite:
                 raise exporters.ExportacionExcedeLimiteError(self._limite)
             total = self._repo.total_preguntas(sesion.caso_id)
+            notas = self._repo.notas_recalculadas([sesion.id])
         encabezados = [
             "ID del estudiante", "Nombre", "Correo institucional", "Código institucional", "Número de intento", "Estado",
             "Motivo de cierre", "Condición académica", "Inicio (UTC)", "Fin (UTC)", "Duración (s)", "Preguntas totales",
@@ -134,7 +135,7 @@ class ExportacionService(ServicioReportesBase):
         ]
 
         def fila(f):
-            d = intento_detalle(f, sesion.id, total, sesion.escala_max)
+            d = intento_detalle(f, sesion.id, total, sesion.escala_max, notas.get(f.id))
             return [
                 f.estudiante_id, f.nombre_completo, f.correo, f.codigo_institucional, d.numero_intento, d.estado, d.motivo_cierre,
                 d.condicion, d.inicio, d.fin, d.duracion_segundos, d.preguntas_totales, d.preguntas_respondidas,

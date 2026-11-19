@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.modules.auth.models import Usuario
 from app.modules.cases.models import CasoEstudio, CriterioRubrica, Escenario, Opcion, Pregunta, Rubrica
 from app.modules.evaluations.strategies.incompleta import CIERRES_ADMINISTRATIVOS
+from app.modules.evaluations.dominio import EvaluacionNoPosibleError
 from app.modules.participations.models import EstadoParticipacionEnum, MotivoCierreEnum, Participacion, Respuesta
 from app.modules.reports.calculations import (
     TRAMOS_DISTRIBUCION,
@@ -43,7 +44,7 @@ EXPIRADA = EstadoParticipacionEnum.EXPIRADA
 
 @dataclass(frozen=True, slots=True)
 class FiltroSesiones:
-    docente_id: uuid.UUID
+    docente_id: uuid.UUID | None
     estado: EstadoSesionEnum | None = None
     espacio_academico_id: uuid.UUID | None = None
     caso_id: uuid.UUID | None = None
@@ -51,7 +52,9 @@ class FiltroSesiones:
     hasta: datetime | None = None
 
     def condiciones(self) -> list[ColumnElement[bool]]:
-        condiciones = [Sesion.docente_id == self.docente_id]  # siempre: el alcance del docente
+        condiciones = []
+        if self.docente_id is not None:
+            condiciones.append(Sesion.docente_id == self.docente_id)
         if self.estado is not None:
             condiciones.append(Sesion.estado == self.estado)
         if self.espacio_academico_id is not None:
@@ -217,8 +220,27 @@ class ReportesRepository:
         )
         if agrupar:
             stmt = stmt.group_by(Sesion.id)
-            return {fila[0]: ConteosIntentos(*fila[1:]) for fila in self._session.execute(stmt)}
-        return {None: ConteosIntentos(*self._session.execute(stmt).one())}
+            datos = {fila[0]: ConteosIntentos(*fila[1:]) for fila in self._session.execute(stmt)}
+        else:
+            datos = {None: ConteosIntentos(*self._session.execute(stmt).one())}
+        notas = self.notas_recalculadas(sesiones)
+        if notas:
+            ids_stmt = select(Participacion.id, Sesion.id).join(Convocatoria, Convocatoria.id == Participacion.convocatoria_id).join(
+                Sesion, Sesion.id == Convocatoria.sesion_id
+            ).where(Participacion.id.in_(list(notas)))
+            por_sesion: dict[uuid.UUID, list[Decimal | None]] = {}
+            for pid, sid in self._session.execute(ids_stmt):
+                por_sesion.setdefault(sid, []).append(notas[pid])
+            if agrupar:
+                for sid, valores in por_sesion.items():
+                    base = datos.get(sid, ConteosIntentos())
+                    cal = sum(v is not None for v in valores)
+                    datos[sid] = ConteosIntentos(base.en_progreso, base.finalizados, base.expirados, cal, base.sin_calificar, base.pendientes, base.expirados_tiempo, base.expirados_revocacion, base.expirados_fin_sesion, base.vencidos_sin_cerrar)
+            else:
+                base = datos[None]
+                cal = sum(v is not None for valores in por_sesion.values() for v in valores)
+                datos[None] = ConteosIntentos(base.en_progreso, base.finalizados, base.expirados, cal, base.sin_calificar, base.pendientes, base.expirados_tiempo, base.expirados_revocacion, base.expirados_fin_sesion, base.vencidos_sin_cerrar)
+        return datos
 
     # --- Estudiantes de una sesión --------------------------------------------------------------
 
@@ -404,61 +426,76 @@ class ReportesRepository:
         valores centrales (numeric, sin pasar por coma flotante). Tramos con la misma expresión
         que `calculations.indice_tramo`. `por_estado` agrupa por FINALIZADA / EXPIRADA.
         """
-        nota = Participacion.nota_final
-        filtros = (Convocatoria.sesion_id.in_(sesiones), nota.is_not(None), Participacion.estado != EN_PROGRESO)
-        clave = [Participacion.estado] if por_estado else []
-
-        def base(*columnas):
-            return (
-                select(*clave, *columnas)
-                .select_from(Participacion)
-                .join(Convocatoria, Convocatoria.id == Participacion.convocatoria_id)
-                .where(*filtros)
-            )
-
-        stmt = base(
-            func.count(),
-            func.min(nota),
-            func.max(nota),
-            func.sum(nota),
-            func.percentile_disc(0.5).within_group(nota.asc()),
-            func.percentile_disc(0.5).within_group(nota.desc()),
+        # La nota persistida es un dato de auditoría, no la fuente de verdad del reporte.
+        # Recalcular aquí también permite corregir reportes históricos de sesiones cerradas.
+        notas = self.notas_recalculadas(sesiones)
+        if not notas:
+            return {}
+        stmt = select(Participacion.id, Participacion.estado, Participacion.convocatoria_id).where(
+            Participacion.id.in_(list(notas))
         )
-        if por_estado:
-            stmt = stmt.group_by(Participacion.estado)
-        resumen = {(f[0] if por_estado else None): f[len(clave):] for f in self._session.execute(stmt)}
+        filas = list(self._session.execute(stmt))
+        # Un estudiante/convocatoria tiene una nota consolidada: siempre gana el último intento.
+        numeros = dict(self._session.execute(
+            select(Participacion.id, Participacion.numero_intento).where(Participacion.id.in_(list(notas)))
+        ))
+        ultimos: dict[uuid.UUID, tuple[int, Any]] = {}
+        for pid, estado, convocatoria in filas:
+            if convocatoria not in ultimos or numeros[pid] > ultimos[convocatoria][0]:
+                ultimos[convocatoria] = (numeros[pid], (estado, notas[pid]))
+        grupos: dict[Any, list[Decimal | None]] = {}
+        for estado, nota in (v[1] for v in ultimos.values()):
+            grupos.setdefault(estado if por_estado else None, []).append(nota)
+        from app.modules.reports.calculations import agregar_notas
 
-        tramos: dict = {k: {} for k in resumen}
-        if escala_max is not None and escala_max > 0:
-            indice = func.least(func.floor(nota * TRAMOS_DISTRIBUCION / escala_max), TRAMOS_DISTRIBUCION - 1)
-            stmt = base(indice, func.count()).group_by(*clave, indice)
-            for f in self._session.execute(stmt):
-                k = f[0] if por_estado else None
-                tramos.setdefault(k, {})[int(f[len(clave)])] = f[len(clave) + 1]
-        return {
-            k: AgregadoNotas(r[0], r[1], r[2], r[3], r[4], r[5], tramos.get(k, {})) if r[0] else AgregadoNotas()
-            for k, r in resumen.items()
-        }
+        return {clave: agregar_notas(valores, escala_max) for clave, valores in grupos.items()}
+
+    def notas_recalculadas(self, sesiones: Select | Sequence[uuid.UUID]) -> dict[uuid.UUID, Decimal | None]:
+        """Calcula notas con la misma estrategia y calculadora del módulo 5, sin escribirlas."""
+        from app.modules.evaluations.services.evaluacion_service import EvaluacionService
+
+        stmt = (
+            select(Participacion.id)
+            .join(Convocatoria, Convocatoria.id == Participacion.convocatoria_id)
+            .where(Convocatoria.sesion_id.in_(sesiones), Participacion.estado != EN_PROGRESO)
+        )
+        servicio = EvaluacionService(self._session)
+        resultado: dict[uuid.UUID, Decimal | None] = {}
+        for participacion_id in self._session.scalars(stmt):
+            try:
+                resultado[participacion_id] = servicio.evaluar(participacion_id).resultado.nota
+            except EvaluacionNoPosibleError:
+                # La misma política del módulo 5 representa intentos no calificables como null.
+                resultado[participacion_id] = None
+        return resultado
 
     def estudiantes_con_nota(self, sesiones: Select | Sequence[uuid.UUID]) -> int:
-        stmt = (
-            select(func.count(func.distinct(Convocatoria.estudiante_id)))
-            .join(Participacion, Participacion.convocatoria_id == Convocatoria.id)
-            .where(Convocatoria.sesion_id.in_(sesiones), Participacion.nota_final.is_not(None))
-        )
-        return self._session.scalar(stmt) or 0
+        notas = self.notas_recalculadas(sesiones)
+        # Consolidación académica: el último intento es el resultado vigente.
+        stmt = select(Convocatoria.estudiante_id, Participacion.numero_intento, Participacion.id).join(
+            Participacion, Participacion.convocatoria_id == Convocatoria.id
+        ).where(Convocatoria.sesion_id.in_(sesiones), Participacion.id.in_(list(notas)))
+        ultimos: dict[uuid.UUID, tuple[int, uuid.UUID]] = {}
+        for estudiante, numero, pid in self._session.execute(stmt):
+            if estudiante not in ultimos or numero > ultimos[estudiante][0]:
+                ultimos[estudiante] = (numero, pid)
+        return sum(notas[pid] is not None for _, pid in ultimos.values())
 
     def promedio_normalizado(self, sesiones: Select) -> Decimal | None:
         """Promedio de nota × 100 / escala de la rúbrica de CADA caso (normalización explícita)."""
-        stmt = (
-            select(func.avg(Participacion.nota_final * 100 / Rubrica.escala_max))
-            .select_from(Participacion)
-            .join(Convocatoria, Convocatoria.id == Participacion.convocatoria_id)
-            .join(Sesion, Sesion.id == Convocatoria.sesion_id)
-            .join(Rubrica, Rubrica.caso_id == Sesion.caso_id)
-            .where(Sesion.id.in_(sesiones), Participacion.nota_final.is_not(None))
+        notas = self.notas_recalculadas(sesiones)
+        stmt = select(Participacion.id, Participacion.convocatoria_id, Rubrica.escala_max).join(
+            Convocatoria, Convocatoria.id == Participacion.convocatoria_id
+        ).join(Sesion, Sesion.id == Convocatoria.sesion_id).join(Rubrica, Rubrica.caso_id == Sesion.caso_id).where(
+            Participacion.id.in_(list(notas))
         )
-        return self._session.scalar(stmt)
+        filas: dict[uuid.UUID, tuple[int, Decimal | None, Decimal]] = {}
+        for pid, conv, escala in self._session.execute(stmt):
+            numero = self._session.scalar(select(Participacion.numero_intento).where(Participacion.id == pid))
+            if conv not in filas or numero > filas[conv][0]:
+                filas[conv] = (numero, notas[pid], escala)
+        valores = [n * 100 / escala for _, n, escala in filas.values() if n is not None and escala]
+        return sum(valores, Decimal(0)) / len(valores) if valores else None
 
     def casos_utilizados(self, sesiones: Select) -> list[Any]:
         stmt = (
@@ -561,12 +598,12 @@ class ReportesRepository:
         stmt = select(exists().where(Sesion.espacio_academico_id == espacio_id, Sesion.docente_id == docente_id))
         return bool(self._session.scalar(stmt))
 
-    def caso_del_autor(self, caso_id: uuid.UUID, autor_id: uuid.UUID) -> Any | None:
+    def caso_del_autor(self, caso_id: uuid.UUID, autor_id: uuid.UUID | None) -> Any | None:
         """Misma regla de propiedad que el módulo 2 (`CasoRepository.get_owned`), en cualquier estado."""
         stmt = (
             select(CasoEstudio.id, CasoEstudio.nombre, CasoEstudio.estado, Rubrica.escala_max)
             .outerjoin(Rubrica, Rubrica.caso_id == CasoEstudio.id)
-            .where(CasoEstudio.id == caso_id, CasoEstudio.autor_id == autor_id)
+            .where(CasoEstudio.id == caso_id, *(() if autor_id is None else (CasoEstudio.autor_id == autor_id,)))
         )
         return self._session.execute(stmt).first()
 

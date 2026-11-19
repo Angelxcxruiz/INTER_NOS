@@ -50,7 +50,7 @@ def info_sesion(fila) -> s.SesionInfoRead:
     )
 
 
-def intento_detalle(fila, sesion_id: uuid.UUID, preguntas_totales: int, escala_max) -> s.IntentoDetalleRead:
+def intento_detalle(fila, sesion_id: uuid.UUID, preguntas_totales: int, escala_max, nota) -> s.IntentoDetalleRead:
     en_progreso = fila.estado == EstadoParticipacionEnum.EN_PROGRESO
     return s.IntentoDetalleRead(
         participacion_id=fila.id,
@@ -67,15 +67,16 @@ def intento_detalle(fila, sesion_id: uuid.UUID, preguntas_totales: int, escala_m
         # Mientras el intento sigue abierto no se exponen resultados (el módulo 5 tampoco lo evalúa).
         aciertos=None if en_progreso else fila.aciertos,
         errores=None if en_progreso else fila.respondidas - fila.aciertos,
-        nota_final=dos(fila.nota_final),
+        nota_final=dos(nota),
         escala_max=dos(escala_max),
-        situacion=calc.situacion_intento(fila.estado, fila.motivo_cierre, fila.nota_final, fila.respondidas),
+        situacion=calc.situacion_intento(fila.estado, fila.motivo_cierre, nota, fila.respondidas),
     )
 
 
 def construir_estudiantes(repo, sesion, filas) -> list[s.EstudianteReporteRead]:
     """Una consulta para la página y otra para TODOS sus intentos (sin N+1)."""
     intentos = defaultdict(list)
+    notas = repo.notas_recalculadas([sesion.id])
     for i in repo.intentos_breves([f.convocatoria_id for f in filas]):
         intentos[i.convocatoria_id].append(
             s.IntentoBreveRead(
@@ -83,8 +84,8 @@ def construir_estudiantes(repo, sesion, filas) -> list[s.EstudianteReporteRead]:
                 numero_intento=i.numero_intento,
                 estado=i.estado,
                 motivo_cierre=i.motivo_cierre,
-                nota_final=dos(i.nota_final),
-                situacion=calc.situacion_intento(i.estado, i.motivo_cierre, i.nota_final, i.respondidas),
+                nota_final=dos(notas.get(i.id)),
+                situacion=calc.situacion_intento(i.estado, i.motivo_cierre, notas.get(i.id), i.respondidas),
             )
         )
     return [
@@ -100,6 +101,16 @@ def construir_estudiantes(repo, sesion, filas) -> list[s.EstudianteReporteRead]:
             intentos_utilizados=f.intentos,
             intento_activo=bool(f.activo),
             intentos_calificados=f.calificados,
+            nota_consolidada=dos(
+                max(
+                    (
+                        (i.numero_intento, notas.get(i.participacion_id))
+                        for i in intentos[f.convocatoria_id]
+                    ),
+                    default=(0, None),
+                    key=lambda item: item[0],
+                )[1]
+            ),
             condicion=calc.condicion_convocado(revocada=f.revocada_en is not None, intentos=f.intentos, estado_sesion=sesion.estado),
             intentos=intentos[f.convocatoria_id],
         )
@@ -188,6 +199,7 @@ class ReportesSesionService(ServicioReportesBase):
                 raise NotFoundError(ESTUDIANTE_NO_ENCONTRADO)
             total = self._repo.total_preguntas(fila.caso_id)
             filas = self._repo.intentos_detallados(fila.id, convocatoria_id=conv.convocatoria_id)
+            notas = self._repo.notas_recalculadas([fila.id])
         return s.DesempenoEstudianteRead(
             sesion_id=fila.id,
             estado_sesion=fila.estado,
@@ -198,8 +210,15 @@ class ReportesSesionService(ServicioReportesBase):
             convocatoria_id=conv.convocatoria_id,
             convocatoria_activa=conv.revocada_en is None,
             intentos_autorizados=conv.intentos_autorizados,
+            nota_consolidada=dos(
+                max(
+                    ((f.numero_intento, notas.get(f.id)) for f in filas),
+                    default=(0, None),
+                    key=lambda item: item[0],
+                )[1]
+            ),
             condicion=calc.condicion_convocado(revocada=conv.revocada_en is not None, intentos=len(filas), estado_sesion=fila.estado),
-            intentos=[intento_detalle(f, fila.id, total, fila.escala_max) for f in filas],
+            intentos=[intento_detalle(f, fila.id, total, fila.escala_max, notas.get(f.id)) for f in filas],
         )
 
     # --- Calificaciones ----------------------------------------------------------------------------------

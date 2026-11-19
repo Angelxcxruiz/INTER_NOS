@@ -2,12 +2,12 @@
 
 Política de acceso (la misma de los módulos 3 y 5, que gestionan sesiones y evaluaciones):
 
-- `DocenteUser` (módulo 1): token `access` de un docente activo. Un administrador o un
+- `AcademicoUser` (módulo 1): token `access` de un docente o administrador activo. Los
   estudiante con token `access` recibe 403; los tokens `student` y `student_results`, 401
   (`decode_access_token` solo acepta el tipo `access`); sin token, 401.
 - Además, cada servicio exige ser el docente RESPONSABLE de la sesión o el AUTOR del caso
-  (404 si no). El rol de administrador no otorga acceso a datos académicos de sesiones, como
-  ya ocurre en los módulos 2, 3 y 5.
+  (404 si no).   docentes conservan el alcance de sus propias sesiones; el administrador consulta el
+  catálogo académico completo.
 """
 
 from typing import Annotated

@@ -1129,7 +1129,7 @@ nota_final = nota_exacta redondeada a 2 decimales con ROUND_HALF_UP
 - `POST /sessions/{id}/evaluations/process` evalúa todos los intentos cerrados en **una transacción**. Si uno no se puede evaluar, se revierte todo. Bloquea la sesión con `FOR SHARE` y las participaciones con `FOR UPDATE` en orden de id, así que dos procesos concurrentes se serializan sin interbloqueos y sin duplicar registros.
 - **Idempotente y determinista.** Con los mismos datos y la misma política la nota es la misma. Si no cambia, no se escribe nada ni se publica ningún evento.
 - **Recalificación controlada** (`POST /participations/{id}/evaluation/recalculate`): solo el docente responsable y solo sobre intentos cerrados. Sirve, por ejemplo, para corregir una nota alterada fuera de la aplicación; el listado la marca con `requiere_procesamiento`. Nunca sobrescribe la retroalimentación del docente.
-- **Varios intentos:** el listado muestra todos con su nota. **No se elige una nota definitiva** (mejor, último u otra regla), porque no existe una política académica aprobada. Queda como decisión pendiente.
+- **Varios intentos:** el listado muestra todos con su nota y los agregados académicos usan la nota del **último intento** de cada estudiante.
 
 ### Retroalimentación
 
@@ -1199,7 +1199,7 @@ Se ejecutan con los mismos comandos de la sección "Pruebas"; el resultado y la 
 
 ### Decisiones pendientes de revisión académica
 
-- **Nota consolidada** cuando hay varios intentos (mejor, último, promedio): no implementada a propósito.
+- **Nota consolidada:** cuando hay varios intentos, se usa la nota del último intento.
 - **Cierre administrativo sin respuestas → `SIN_CALIFICAR`** y **ausencia → `null`**: son propuestas del módulo 5 y no imponen un cero. Si la política académica exige un cero, el cambio se limita a la estrategia correspondiente.
 - **Convocatoria revocada:** su estudiante no puede consultar resultados (coherente con el módulo 3, donde una convocatoria revocada no autoriza tokens). El docente sí ve su intento y su nota.
 - Las reglas de niveles que exige la calificación podrían adelantarse a la publicación del módulo 2 para detectar antes los casos no evaluables. No se hizo para no cambiar CaseDSL ni las reglas de publicación sin acuerdo.
@@ -1454,7 +1454,7 @@ El resultado y la cobertura están en `docs/REPORTE_PRUEBAS_MODULO_6.md`.
 
 ## Módulo 7: Seguimiento y Reportes
 
-Permite al docente consultar el desarrollo y los resultados de sus actividades académicas: seguimiento de sesiones y convocatorias, participaciones, ausencias, intentos, calificaciones, desempeño por criterio y por pregunta, historial por caso y por espacio académico, y exportación CSV.
+Permite a docentes y administradores consultar el desarrollo y los resultados de las actividades académicas: seguimiento de sesiones y convocatorias, participaciones, ausencias, intentos, calificaciones, desempeño por criterio y por pregunta, historial por caso y por espacio académico, y exportación CSV.
 
 Es **solo de lectura**: no modifica respuestas, notas, retroalimentaciones, estados ni convocatorias. Tampoco agrega tablas, migraciones, dependencias ni patrones de diseño.
 
@@ -1477,13 +1477,13 @@ app/modules/reports/
 └── routers/        # Solo GET; sin cálculos ni SQL
 ```
 
-Flujo: `router → DocenteUser → servicio (instantánea de lectura + propiedad) → repositorio (agregación SQL) → cálculos puros → esquema`.
+Flujo: `router → AcademicoUser → servicio (instantánea de lectura + alcance por rol) → repositorio → cálculos del módulo 5 → esquema`.
 
 ### Reutilización de los módulos anteriores
 
 | Necesidad | Contrato reutilizado (sin duplicarlo) |
 |---|---|
-| Nota de un intento | `participacion.nota_final` registrada por el módulo 5. El reporte **no recalcula** notas. |
+| Nota de un intento | El reporte reutiliza la estrategia y la calculadora del módulo 5 para recalcularla desde las respuestas, sin escribir durante la consulta. |
 | Si un intento cerrado sin nota está pendiente o "sin calificar" | `CIERRES_ADMINISTRATIVOS` de `EstrategiaEvaluacionIncompleta`. Una prueba unitaria compara `calculations.calificable` con las tres estrategias reales. |
 | COMPLETA / INCOMPLETA | `SelectorEstrategia` del módulo 5 (sin calcular la nota) |
 | Puntaje por criterio | `CalculadoraRubrica.puntuar` y `mapeo.criterio` del módulo 5 |
@@ -1526,15 +1526,15 @@ tasa_calificacion  = intentos con nota registrada                    / intentos 
 | `SIN_CALIFICAR` | Cerrado y sin nota por la política del módulo 5 (cierre administrativo sin respuestas). **No es un cero.** |
 | `PENDIENTE_CALIFICACION` | El módulo 5 lo calificaría, pero aún no se procesó |
 
-- **Varios intentos:** cada intento se muestra por separado, ordenado por número. **No hay nota consolidada** ni promedio por estudiante, porque no existe una política académica para ello (decisión del módulo 5).
-- **Estadísticas de notas** (`unidad: "intento"`): evaluados, mínimo, máximo, promedio, mediana, promedio en % de la escala y distribución.
+- **Varios intentos:** cada intento se muestra por separado, ordenado por número. Los agregados usan la nota del último intento de cada estudiante.
+- **Estadísticas de notas** (`unidad: "intento"`): evaluados por estudiante según su último intento, mínimo, máximo, promedio, mediana, promedio en % de la escala y distribución.
   - Solo se usan las notas registradas: las nulas no cuentan como cero.
   - Todo con `Decimal`, redondeado una sola vez.
   - La mediana es exacta: `percentile_disc(0.5)` en orden ascendente y descendente da los dos valores centrales.
   - La distribución usa cinco tramos de igual amplitud sobre la escala de la rúbrica (`[0, 20 %)`, …, `[80 %, 100 %]`). Un límite pertenece al tramo superior.
   - No se supone una escala de 5,0.
 - **Escalas distintas:** una sesión y un caso tienen una sola rúbrica (no editable tras publicarse), así que sus notas son comparables. El espacio académico puede mezclar casos, por lo que solo combina notas **normalizadas** (`nota × 100 / escala` de su rúbrica). Cada caso muestra además su promedio en su propia escala.
-- **Recalificación:** los reportes reflejan el estado actual de PostgreSQL. Si el módulo 5 recalifica un intento, los reportes posteriores muestran la nota nueva. No se guardan copias históricas de los reportes.
+- **Recalificación:** los reportes recalculan las notas desde las respuestas y reflejan el estado actual de PostgreSQL. No se guardan copias históricas ni cachés obsoletas.
 
 ### Desempeño por criterio y por pregunta
 
@@ -1583,7 +1583,7 @@ Cada reporte se calcula en **una transacción `READ ONLY` con aislamiento `REPEA
 - Las pruebas verifican que el número de consultas es **idéntico con 5 y con 200 estudiantes** (400 intentos, 1 200 respuestas).
 - **Índices:** no se añadieron. Las consultas filtran por claves ya indexadas: `ix_sesion_docente_id_inicio`, `ix_sesion_caso_id`, `ix_sesion_espacio_academico_id`, `uq_convocatoria_sesion_estudiante`, `uq_participacion_convocatoria_intento` y `uq_respuesta_participacion_pregunta`.
 
-### Endpoints del módulo 7 (`/api/v1`, `DocenteUser`)
+### Endpoints del módulo 7 (`/api/v1`, `AcademicoUser`)
 
 | Método | Ruta | Función |
 |---|---|---|
@@ -1659,13 +1659,13 @@ El resultado y la cobertura están en `docs/REPORTE_PRUEBAS_MODULO_7.md`.
 
 ### Limitaciones y decisiones pendientes
 
-- **Nota consolidada entre intentos:** sigue sin definirse (módulo 5) y los reportes no la inventan.
-- **Coherencia de la nota registrada:** el reporte usa `nota_final` tal como está guardada y no recalcula. Si se alteró fuera de la aplicación, lo detecta el módulo 5 (`requiere_procesamiento` en `/evaluations`).
+- **Nota consolidada entre intentos:** se usa el último intento cerrado de cada estudiante.
+- **Coherencia de la nota registrada:** el reporte recalcula la nota desde las respuestas y no depende exclusivamente de `nota_final`.
 - **Pendiente frente a sin calificar:** se deriva de la política vigente del módulo 5. Si esa política cambia, basta con cambiar `CIERRES_ADMINISTRATIVOS`.
-- **Administradores:** no tienen reportes académicos. Si la institución necesita una supervisión global, debe definirse un permiso explícito.
+- **Administradores:** pueden consultar reportes académicos globales; los docentes mantienen el alcance limitado a sus propias sesiones.
 - **Formatos:** solo CSV. Excel o PDF requerirían dependencias que ningún requisito del repositorio exige.
 - **Volumen:** el desempeño por criterio trae una fila por intento × criterio para aplicar `CalculadoraRubrica.puntuar`. Basta para grupos académicos; con decenas de miles de intentos convendría una vista materializada.
-- **Sin caché ni reportes históricos:** cada consulta refleja el estado actual de PostgreSQL.
+- **Sin caché:** cada consulta refleja el estado actual de PostgreSQL. Las sesiones cerradas y el historial de intentos constituyen la fuente histórica disponible.
 
 ## Pendiente para módulos posteriores
 

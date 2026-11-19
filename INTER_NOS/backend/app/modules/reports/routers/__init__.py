@@ -10,7 +10,8 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query, Response
 
-from app.modules.auth.dependencies import DocenteUser
+from app.modules.auth.dependencies import AcademicoUser, DocenteUser
+from app.modules.auth.models import RolUsuario
 from app.modules.auth.schemas import MessageResponse
 from app.modules.reports import exporters
 from app.modules.reports import schemas as s
@@ -89,7 +90,7 @@ def session_students(
     "/sessions/{session_id}/reports/students/{student_id}",
     response_model=s.DesempenoEstudianteRead,
     summary="Historial de intentos de un estudiante en la sesión",
-    description="Cada intento por separado, ordenado por número de intento. No se consolida una nota.",
+    description="Cada intento por separado, ordenado por número de intento. Los agregados usan el último intento.",
     responses=LECTURA,
 )
 def session_student(
@@ -157,11 +158,11 @@ def export_session(
     responses=_r(401, 403, 422),
 )
 def my_sessions(
-    filtros: Annotated[s.FiltrosSesiones, Query()], docente: DocenteUser, service: ReportesAcademicosDep, response: Response
+    filtros: Annotated[s.FiltrosSesiones, Query()], docente: AcademicoUser, service: ReportesAcademicosDep, response: Response
 ) -> s.SesionesReporteList:
     response.headers.update(NO_STORE)
     filtro = FiltroSesiones(
-        docente.id, filtros.estado, filtros.espacio_academico_id, filtros.caso_id, filtros.desde, filtros.hasta
+        None if docente.rol == RolUsuario.ADMINISTRADOR else docente.id, filtros.estado, filtros.espacio_academico_id, filtros.caso_id, filtros.desde, filtros.hasta
     )
     return service.mis_sesiones(filtro, skip=filtros.skip, limit=filtros.limit)
 
@@ -175,12 +176,12 @@ def my_sessions(
 def space_report(
     space_id: uuid.UUID,
     filtros: Annotated[s.FiltrosSesionesEspacio, Query()],
-    docente: DocenteUser,
+    docente: AcademicoUser,
     service: ReportesAcademicosDep,
     response: Response,
 ) -> s.EspacioReporteRead:
     response.headers.update(NO_STORE)
-    filtro = FiltroSesiones(docente.id, filtros.estado, space_id, filtros.caso_id, filtros.desde, filtros.hasta)
+    filtro = FiltroSesiones(None if docente.rol == RolUsuario.ADMINISTRADOR else docente.id, filtros.estado, space_id, filtros.caso_id, filtros.desde, filtros.hasta)
     return service.espacio(space_id, filtro, skip=filtros.skip, limit=filtros.limit)
 
 
@@ -191,9 +192,9 @@ def space_report(
     responses={**CSV, **LECTURA},
 )
 def export_space(
-    space_id: uuid.UUID, parametros: Annotated[s.ExportacionEspacio, Query()], docente: DocenteUser, service: ExportacionDep
+    space_id: uuid.UUID, parametros: Annotated[s.ExportacionEspacio, Query()], docente: AcademicoUser, service: ExportacionDep
 ) -> Response:
-    filtro = FiltroSesiones(docente.id, parametros.estado, space_id, parametros.caso_id, parametros.desde, parametros.hasta)
+    filtro = FiltroSesiones(None if docente.rol == RolUsuario.ADMINISTRADOR else docente.id, parametros.estado, space_id, parametros.caso_id, parametros.desde, parametros.hasta)
     return _descarga(service.exportar_espacio(space_id, filtro))
 
 
@@ -206,13 +207,13 @@ def export_space(
 def case_report(
     case_id: uuid.UUID,
     filtros: Annotated[s.FiltrosSesionesCaso, Query()],
-    docente: DocenteUser,
+    docente: AcademicoUser,
     service: ReportesAcademicosDep,
     response: Response,
 ) -> s.CasoReporteRead:
     response.headers.update(NO_STORE)
-    filtro = FiltroSesiones(docente.id, filtros.estado, filtros.espacio_academico_id, case_id, filtros.desde, filtros.hasta)
-    return service.caso(case_id, filtro, skip=filtros.skip, limit=filtros.limit)
+    filtro = FiltroSesiones(None if docente.rol == RolUsuario.ADMINISTRADOR else docente.id, filtros.estado, filtros.espacio_academico_id, case_id, filtros.desde, filtros.hasta)
+    return service.caso(case_id, filtro, skip=filtros.skip, limit=filtros.limit, autor_id=None if docente.rol == RolUsuario.ADMINISTRADOR else docente.id)
 
 
 __all__ = ["router"]

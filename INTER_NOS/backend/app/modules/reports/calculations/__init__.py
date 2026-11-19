@@ -11,7 +11,7 @@ Reglas comunes:
 - Un porcentaje con denominador cero no se calcula: vale `None` (ausencia de datos), nunca
   0 % ni 100 %.
 - Una nota nula NO es un cero: las estadísticas solo usan las notas registradas.
-- No se consolida una nota por estudiante: las estadísticas son por INTENTO evaluado.
+- Las estadísticas académicas se consolidan por estudiante usando su último intento evaluable.
 """
 
 import decimal

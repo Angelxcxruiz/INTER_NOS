@@ -234,9 +234,9 @@ def test_varios_intentos_se_cuentan_por_intento_y_por_estudiante(entorno):
     assert (r["intentos"]["total"], r["convocatorias"]["activas_con_intento"]) == (2, 1)
     assert r["indicadores"]["tasa_participacion"] == {"numerador": 1, "denominador": 3, "porcentaje": "33.33"}
     assert [(i["numero_intento"], i["nota_final"]) for i in detalle["intentos"]] == [(1, "1.00"), (2, "5.00")]
-    assert "nota_consolidada" not in detalle and "promedio" not in detalle
+    assert detalle["nota_consolidada"] == "5.00"
     assert (fila_estudiante["intentos_utilizados"], fila_estudiante["intentos_autorizados"], fila_estudiante["intentos_calificados"]) == (2, 2, 2)
-    assert (notas["estadisticas"]["evaluados"], notas["estudiantes_con_nota"], notas["estadisticas"]["unidad"]) == (2, 1, "intento")
+    assert (notas["estadisticas"]["evaluados"], notas["estudiantes_con_nota"], notas["estadisticas"]["unidad"]) == (1, 1, "intento")
 
 
 def test_criterios_y_preguntas_coinciden_con_el_desglose_del_modulo_5(entorno):

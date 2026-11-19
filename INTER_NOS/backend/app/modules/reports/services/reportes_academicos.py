@@ -55,9 +55,9 @@ class ReportesAcademicosService(ServicioReportesBase):
 
     # --- Caso académico ---------------------------------------------------------------------------------
 
-    def caso(self, caso_id: uuid.UUID, filtro: FiltroSesiones, *, skip: int, limit: int) -> s.CasoReporteRead:
+    def caso(self, caso_id: uuid.UUID, filtro: FiltroSesiones, *, skip: int, limit: int, autor_id: uuid.UUID | None = None) -> s.CasoReporteRead:
         with self._lectura():
-            caso = self._repo.caso_del_autor(caso_id, filtro.docente_id)
+            caso = self._repo.caso_del_autor(caso_id, autor_id if autor_id is not None else filtro.docente_id)
             if caso is None:
                 raise NotFoundError(CASO_NO_ENCONTRADO)
             ahora = self._reloj.ahora()
